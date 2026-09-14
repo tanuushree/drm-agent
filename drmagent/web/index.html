@@ -190,6 +190,16 @@
 
   .approval{ margin-top:11px; padding:11px 13px; border-radius:8px; background:var(--red-tint); color:var(--red); font-size:13px; }
   .approval ul{ margin:6px 0 0; padding-left:18px; }
+  .review-editor{ margin-top:12px; padding:13px; border:1px solid var(--line); border-radius:8px; background:var(--paper); }
+  .review-editor label{ display:block; font-size:11.5px; color:var(--muted); margin:8px 0 4px; }
+  .review-editor input, .review-editor textarea{ width:100%; border:1px solid var(--line); border-radius:7px; padding:8px 9px; font:inherit; font-size:13px; background:#fff; color:var(--ink); }
+  .review-editor textarea{ min-height:72px; resize:vertical; }
+  .review-actions{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .review-actions button{ font-size:12.5px; padding:8px 12px; }
+  .review-actions .approve{ background:var(--teal); }
+  .review-actions .reject{ background:var(--red); }
+  .job-progress{ margin-top:10px; height:6px; border-radius:99px; background:var(--line); overflow:hidden; }
+  .job-progress > div{ height:100%; width:0; background:var(--gold); transition:width .25s ease; }
 
   details{ margin-top:11px; }
   summary{ cursor:pointer; font-size:12.5px; color:var(--muted); }
@@ -264,7 +274,7 @@
     <section class="page" data-page="1">
       <div class="eyebrow">Step 2 of 5</div>
       <h2>Connect Gmail</h2>
-      <p class="lede">DRM Agent reads donor email threads to build context. It requests read-only access — nothing is ever sent on your behalf in this prototype.</p>
+      <p class="lede">DRM Agent reads donor email threads to build context. Low-risk approved actions may be sent automatically; sensitive actions are held for explicit human review.</p>
       <div class="actions">
         <a id="googleAuthLink" href="#"><button class="primary">Continue to Google →</button></a>
       </div>
@@ -309,6 +319,7 @@
           <span>Ready when you are — this runs live LLM calls per donor.</span>
         </div>
         <div class="timer" id="timerLine"></div>
+        <div class="job-progress"><div id="jobProgressBar"></div></div>
       </div>
 
       <div class="actions">
@@ -494,25 +505,20 @@
 
   // ---------- step 4: run ----------
 
-  const PHASES = [
-    'Fetching matching Gmail threads…',
-    'Summarizing conversation history…',
-    'Extracting donor profiles…',
-    'Classifying next actions…',
-    'Drafting action plans…',
-    'Applying the approval policy…',
-  ];
+  const PHASES = {
+    fetching: 'Fetching matching Gmail threads…',
+    classifying: 'Classifying donor relationships…',
+    approval: 'Applying the deterministic approval policy…',
+    drafting: 'Preparing communication drafts…',
+    sending: 'Sending approved communication…',
+  };
 
-  let phaseTimer = null, clockTimer = null, elapsed = 0;
+  let clockTimer = null, elapsed = 0;
 
   function startRunUI(){
     elapsed = 0;
-    let phaseIdx = 0;
-    $('phaseLine').innerHTML = `<span class="spinner"></span><span>${PHASES[0]}</span>`;
-    phaseTimer = setInterval(() => {
-      phaseIdx = (phaseIdx + 1) % PHASES.length;
-      $('phaseLine').querySelector('span:last-child').textContent = PHASES[phaseIdx];
-    }, 2600);
+    $('phaseLine').innerHTML = `<span class="spinner"></span><span>Starting donor processing…</span>`;
+    $('jobProgressBar').style.width = '0%';
     clockTimer = setInterval(() => {
       elapsed += 1;
       const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
@@ -521,9 +527,29 @@
     }, 1000);
   }
 
+  function updateJobUI(job){
+    const phase = PHASES[job.current_phase] || job.current_phase || 'Processing donors…';
+    const current = job.current_donor ? ` · ${job.current_donor}` : '';
+    $('phaseLine').innerHTML = `<span class="spinner"></span><span>${escapeHtml(phase + current)}</span>`;
+    const pct = job.total ? Math.round((job.completed / job.total) * 100) : 0;
+    $('jobProgressBar').style.width = `${pct}%`;
+    $('timerLine').textContent = `${job.completed}/${job.total} donors completed`;
+  }
+
   function stopRunUI(finalText){
-    clearInterval(phaseTimer); clearInterval(clockTimer);
-    $('phaseLine').innerHTML = `<span>${finalText}</span>`;
+    clearInterval(clockTimer);
+    $('phaseLine').innerHTML = `<span>${escapeHtml(finalText)}</span>`;
+    $('jobProgressBar').style.width = '100%';
+  }
+
+  async function pollJob(jobId){
+    while (true){
+      const job = await api(`/jobs/${encodeURIComponent(jobId)}`);
+      updateJobUI(job);
+      if (job.status === 'done') return job;
+      if (job.status === 'error') throw new Error(job.error || 'The processing job failed.');
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
   }
 
   async function runPipeline(){
@@ -531,9 +557,10 @@
     btn.disabled = true;
     startRunUI();
     try {
-      const data = await api('/donors/process', { method: 'POST' });
+      const started = await api('/donors/process', { method: 'POST' });
+      const data = await pollJob(started.job_id);
       lastResults = data;
-      stopRunUI(`Done — processed ${data.count} donor(s).`);
+      stopRunUI(`Done — processed ${data.completed} donor(s).`);
       renderResults(data);
       unlock(4);
     } catch (e) {
@@ -593,6 +620,95 @@
     return '';
   }
 
+  async function saveReview(donorId, card){
+    const payload = {
+      recommended_action: card.querySelector('[data-field="recommended_action"]').value,
+      next_step: card.querySelector('[data-field="next_step"]').value,
+      message_type: card.querySelector('[data-field="message_type"]').value || null,
+      message_context: card.querySelector('[data-field="message_context"]').value || null,
+      email_subject: card.querySelector('[data-field="email_subject"]')?.value || null,
+      email_body: card.querySelector('[data-field="email_body"]')?.value || null,
+    };
+    return api(`/reviews/${encodeURIComponent(donorId)}/draft`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function approveReview(donorId, card){
+    const btn = card.querySelector('[data-review-action="approve"]');
+    btn.disabled = true;
+    try {
+      await saveReview(donorId, card);
+      const data = await api(`/reviews/${encodeURIComponent(donorId)}/approve`, { method: 'POST' });
+      const sent = data.execution && data.execution.email ? data.execution.email.to : '';
+      card.querySelector('.review-editor').innerHTML = `<strong>Approved and sent${sent ? ` to ${escapeHtml(sent)}` : ''}.</strong>`;
+      banner('ok', `${donorId}: approved and sent.`);
+      refreshReviewCount();
+    } catch (e) {
+      banner('error', `${donorId}: ${e.message}`);
+      btn.disabled = false;
+    }
+  }
+
+  async function rejectReview(donorId, card){
+    const reason = window.prompt('Reason for rejection:', 'Rejected by reviewer');
+    if (reason === null) return;
+    const btn = card.querySelector('[data-review-action="reject"]');
+    btn.disabled = true;
+    try {
+      await api(`/reviews/${encodeURIComponent(donorId)}/reject`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reason}),
+      });
+      card.querySelector('.review-editor').innerHTML = `<strong>Rejected.</strong><div class="line">${escapeHtml(reason)}</div>`;
+      banner('ok', `${donorId}: review rejected.`);
+      refreshReviewCount();
+    } catch (e) {
+      banner('error', `${donorId}: ${e.message}`);
+      btn.disabled = false;
+    }
+  }
+
+  function reviewBlock(r){
+    if (!r.approval || !r.approval.requires_human_approval) return '';
+    const p = r.plan || {};
+    const reasons = (r.approval.reason || []).map(x => `<li>${escapeHtml(x)}</li>`).join('');
+    const email = r.execution && r.execution.email ? r.execution.email : {};
+    const draftBlock = email.body ? `<div class="approval" style="background:var(--blue-tint);color:var(--blue);"><strong>Draft for review</strong><div class="line"><span class="label">To:</span> ${escapeHtml(email.to || '')}</div><div class="line"><span class="label">Subject:</span> ${escapeHtml(email.subject || '')}</div><details><summary>Email body</summary><pre>${escapeHtml(email.body || '')}</pre></details></div>` : '';
+    return `<div class="approval"><strong>Needs human approval</strong><ul>${reasons}</ul>${draftBlock}
+      <div class="review-editor">
+        <label>Recommended action</label>
+        <textarea data-field="recommended_action">${escapeHtml(p.recommended_action || '')}</textarea>
+        <label>Next step</label>
+        <textarea data-field="next_step">${escapeHtml(p.next_step || '')}</textarea>
+        <label>Message type</label>
+        <input data-field="message_type" value="${escapeHtml(p.message_type || '')}" />
+        <label>Message context</label>
+        <textarea data-field="message_context">${escapeHtml(p.message_context || '')}</textarea>
+        <label>Email subject</label>
+        <input data-field="email_subject" value="${escapeHtml(email.subject || '')}" />
+        <label>Email body</label>
+        <textarea data-field="email_body">${escapeHtml(email.body || '')}</textarea>
+        <div class="review-actions">
+          <button class="approve" data-review-action="approve">Save &amp; approve &amp; send</button>
+          <button class="reject" data-review-action="reject">Reject</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  async function refreshReviewCount(){
+    try {
+      const data = await api('/reviews?status=pending');
+      const count = (data.reviews || []).length;
+      const el = document.querySelector('[data-review-count]');
+      if (el) el.textContent = count;
+    } catch (_) {}
+  }
+
   function renderResults(payload){
     const results = payload.results || [];
     const approvals = results.filter(r => r.approval.requires_human_approval).length;
@@ -609,11 +725,10 @@
       const donor = r.donor, plan = r.plan, approval = r.approval;
       const classification = r.classification || { action: plan.action, reason: '(processing failed before classification)' };
       const approvalBlock = approval.requires_human_approval
-        ? `<div class="approval"><strong>Needs human approval</strong>
-             <ul>${approval.reason.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`
+        ? reviewBlock(r)
         : executionBlock(r.execution);
       return `
-        <div class="result">
+        <div class="result" data-donor-id="${escapeHtml(donor.donor_id)}">
           <div class="result-head">
             <div class="who">${escapeHtml(donor.name || donor.donor_id)}
               <span class="email">${escapeHtml(donor.email)}</span>
@@ -624,12 +739,24 @@
             <div class="line"><span class="label">Threads found:</span> ${r.conversation_count}</div>
             <div class="line"><span class="label">Reason:</span> ${escapeHtml(classification.reason)}</div>
             <div class="line"><span class="label">Next step:</span> ${escapeHtml(plan.next_step)}</div>
+            ${r.profile ? `<details><summary>Donor intelligence</summary><div class="line"><span class="label">Summary:</span> ${escapeHtml(r.profile.communication_summary || '—')}</div><div class="line"><span class="label">Sentiment:</span> ${escapeHtml(r.profile.sentiment || '—')}</div><div class="line"><span class="label">Interests:</span> ${escapeHtml((r.profile.interests || []).join(', ') || '—')}</div><div class="line"><span class="label">Requests:</span> ${escapeHtml((r.profile.requests || []).join(' · ') || '—')}</div><div class="line"><span class="label">Unresolved:</span> ${escapeHtml((r.profile.unresolved_items || []).join(' · ') || '—')}</div></details>` : ''}
             ${approvalBlock}
             <details><summary>Raw JSON</summary><pre>${escapeHtml(JSON.stringify(r, null, 2))}</pre></details>
           </div>
         </div>`;
     }).join('');
   }
+
+  $('resultsWrap').addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-review-action]');
+    if (!button) return;
+    const card = button.closest('.result');
+    const donorEmail = card ? card.querySelector('.email') : null;
+    const donorId = card ? card.dataset.donorId : null;
+    if (!donorId) return;
+    if (button.dataset.reviewAction === 'approve') await approveReview(donorId, card);
+    if (button.dataset.reviewAction === 'reject') await rejectReview(donorId, card);
+  });
 
   // ---------- sign out ----------
 

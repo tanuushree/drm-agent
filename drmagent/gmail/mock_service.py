@@ -325,3 +325,25 @@ class MockGmailService:
         }
         self.sent.append(record)
         return record
+
+    def send_email(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+    ) -> dict[str, Any]:
+        """Mirrors GmailService.send_email() -- sends a brand-new email
+        (not a reply) to a donor with no existing thread, e.g. the
+        cold-outreach path for a new prospective donor. Same
+        no-external-call recording behavior as send_reply()."""
+        fake_id = f"mock-sent-{uuid.uuid4().hex[:12]}"
+        record = {
+            "id": fake_id,
+            "threadId": None,
+            "in_reply_to_message_id": None,
+            "to": to,
+            "subject": subject,
+            "body": body,
+        }
+        self.sent.append(record)
+        return record

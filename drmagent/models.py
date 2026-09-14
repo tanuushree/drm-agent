@@ -85,22 +85,7 @@ class ActionPlan(BaseModel):
     requires_human_approval: bool = False
     due_date: Optional[str] = None
 
-class GmailContext(BaseModel):
-    thread_id: str
-    message_id: str
 
-class EmailDraft(BaseModel):
-    to: str
-    subject: str
-    body: str
-
-
-# class ExecutionResult(BaseModel):
-#     status: Literal["drafted", "not_executed"]
-#     thread_id: Optional[str] = None
-#     message_id: Optional[str] = None
-#     email: Optional[EmailDraft] = None
-#     reason: Optional[str] = None
 class DonorActionState(BaseModel):
     """Persisted record of the last action taken for a donor, used to avoid
     re-triggering the same low-stakes outbound action on every run."""

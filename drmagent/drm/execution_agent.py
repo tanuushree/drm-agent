@@ -20,7 +20,7 @@ def _model() -> OpenAIModel:
             "api_key": settings.groq_api_key,
             "base_url": settings.groq_base_url,
         },
-        model_id=settings.planning_model,
+        model_id=settings.execution_model,
         params={
             "temperature": 0.2,
             "max_tokens": 2000,

@@ -1,0 +1,925 @@
+diff --git a/.gitignore b/.gitignore
+index 392d5da..1fc2672 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,2 +1,6 @@
+ .env
+-credentials.json
+\ No newline at end of file
++credentials.json
++__pycache__/
++*.csv
++data/
++*.zip
+\ No newline at end of file
+diff --git a/README.md b/README.md
+deleted file mode 100644
+index 3826d46..0000000
+--- a/README.md
++++ /dev/null
+@@ -1,202 +0,0 @@
+-# DRMAgent — Integrated Donor Relationship Management
+-
+-An end-to-end prototype that connects donor CSV records, Gmail communication history, Strands-based donor-profile extraction, and the Donor Relationship Management decision flow.
+-
+-## Architecture
+-
+-```text
+-NGO login
+-   |
+-   +--> Google Gmail OAuth (read-only)
+-   |
+-   +--> Donor CSV (donor_id, email, optional name)
+-              |
+-              v
+-       Gmail thread search
+-              |
+-              v
+-       Full donor conversations
+-              |
+-              v
+-       Message normalization
+-              |
+-              v
+-       Thread consolidation
+-              |
+-              v
+-       ConversationSummary
+-              |
+-              v
+-       DonorProfile extraction
+-              |
+-              v
+-       DRM classification
+-              |
+-              v
+-       ActionPlan
+-              |
+-       +------+------+------+------+ 
+-       |      |      |      |      |
+-    Thank   Outreach Follow  Wait  Human
+-     You              Up          Review
+-```
+-
+-The `DonorProfile` is the contract between the profile pipeline and the DRM decision layer. This keeps the DRM agent independent of Gmail implementation details.
+-
+-## Project structure
+-
+-```text
+-drmagent/
+-├── main.py                 # FastAPI application, auth, OAuth callback, donor endpoints
+-├── config.py               # Environment-backed settings
+-├── models.py               # Pydantic data contracts
+-├── orchestrator.py         # End-to-end donor processing pipeline
+-├── gmail/
+-│   ├── auth.py             # Google OAuth URL + authorization-code exchange
+-│   └── service.py          # Gmail thread search, retrieval, and message parsing
+-├── profile/
+-│   ├── agents.py           # Consolidation and donor-profile Strands agents
+-│   └── service.py          # Conversation formatting + profile pipeline
+-└── drm/
+-    ├── agent.py            # Final donor action classification + action plan
+-    └── tools.py            # Draft/escalation/update tool contracts
+-
+-.env.example               # Required environment variables
+-requirements.txt            # Python dependencies
+-```
+-
+-## Model routing
+-
+-The project intentionally does not use the largest model for every step.
+-
+-| Function | Model | Reason |
+-|---|---|---|
+-| Conversation consolidation | `openai/gpt-oss-20b` | Fast, cost-efficient summarization |
+-| Donor-profile extraction | `openai/gpt-oss-120b` | Higher accuracy for nuanced structured extraction |
+-| Action classification | `openai/gpt-oss-20b` | Small, constrained classification task |
+-| Action planning | `openai/gpt-oss-120b` | More nuanced operational reasoning |
+-
+-Groq currently lists GPT-OSS 20B and 120B as production models with tool use and JSON Schema support; GPT-OSS 120B is positioned for higher-capability agentic work, while 20B is the faster/cost-efficient option. See the official Groq model documentation for current availability. 
+-
+-## Setup
+-
+-### 1. Create a virtual environment
+-
+-Windows:
+-
+-```powershell
+-py -m venv .venv
+-.venv\Scripts\activate
+-```
+-
+-macOS/Linux:
+-
+-```bash
+-python3 -m venv .venv
+-source .venv/bin/activate
+-```
+-
+-### 2. Install dependencies
+-
+-```bash
+-pip install -r requirements.txt
+-```
+-
+-### 3. Configure environment variables
+-
+-Copy `.env.example` to `.env` and fill in:
+-
+-- `GROQ_API_KEY`
+-- `GOOGLE_CLIENT_ID`
+-- `GOOGLE_CLIENT_SECRET`
+-- `NGO_USERNAME`
+-- `NGO_PASSWORD`
+-
+-In Google Cloud, enable the Gmail API and configure an OAuth client with this redirect URI:
+-
+-```text
+-http://localhost:8000/auth/google/callback
+-```
+-
+-Use a Gmail read-only scope. The application never needs Gmail send permission for the current prototype.
+-
+-### 4. Start the API
+-
+-```bash
+-uvicorn drmagent.main:app --reload
+-```
+-
+-Open the FastAPI Swagger UI at:
+-
+-```text
+-http://localhost:8000/docs
+-```
+-
+-## Running the flow
+-
+-1. Call `POST /login` with the NGO username/password.
+-2. The response contains `google_auth_url`.
+-3. Open that URL and grant Gmail read-only access.
+-4. Google redirects to `/auth/google/callback` and establishes the application session.
+-5. Upload a donor CSV using `POST /donors/upload`.
+-6. The CSV must contain at least:
+-
+-```csv
+-donor_id,email,name
+-D001,donor@example.com,Example Donor
+-```
+-
+-7. Call `POST /donors/process`.
+-8. For every donor, the system searches Gmail for messages in either direction with that donor, retrieves the matching threads, normalizes the email bodies, summarizes each thread, builds a structured `DonorProfile`, classifies the next DRM action, and creates an `ActionPlan`.
+-
+-## Data flow for one donor
+-
+-```text
+-D001 / donor@example.com
+-          |
+-          v
+-Gmail thread search
+-          |
+-          v
+-Thread A + Thread B + ...
+-          |
+-          v
+-Clean messages
+-          |
+-          v
+-Per-thread ConversationSummary
+-          |
+-          v
+-Aggregate summary
+-          |
+-          v
+-DonorProfile
+-          |
+-          v
+-ActionClassification
+-          |
+-          v
+-ActionPlan
+-```
+-
+-## DRM action policy
+-
+-The final action is exactly one of:
+-
+-- **Human Review** — major gifts, complaints, sensitive requests, or ambiguous cases.
+-- **Thank You** — recent donation that has not been acknowledged.
+-- **Follow-Up** — explicit pending donor request or unresolved NGO commitment.
+-- **Outreach** — proactive engagement is due.
+-- **Wait** — no action is currently needed.
+-
+-The priority order is deliberate so that a higher-priority event is not overridden by generic outreach.
+-
+-## Current prototype boundaries
+-
+-This branch intentionally keeps external side effects behind tool contracts. `draft_message`, `update_donor`, and `flag_for_human` currently return request payloads rather than sending email or writing to a production database. A production integration should connect these tools to a persistent donor store, task/CRM system, and a separate communication approval/send service.
+-
+-The current FastAPI sessions and donor records are in-memory and are suitable for local development only. Production deployment should use a persistent session store/database and encrypt OAuth credentials at rest.
+-
+-## Security
+-
+-Never commit `.env`, OAuth tokens, client secrets, or API keys. If a secret has ever been committed to Git, rotate/revoke it before using the repository in a real environment.
+diff --git a/donors.csv b/donors.csv
+deleted file mode 100644
+index caf17b8..0000000
+--- a/donors.csv
++++ /dev/null
+@@ -1,2 +0,0 @@
+-donor_id,name,email
+-D001,Test Donor,srivas.me1@gmail.com
+\ No newline at end of file
+diff --git a/drmagent/config.py b/drmagent/config.py
+index 4c770bf..fbe2db6 100644
+--- a/drmagent/config.py
++++ b/drmagent/config.py
+@@ -1,9 +1,29 @@
+ import os
+ from dataclasses import dataclass
++from pathlib import Path
+ 
+ from dotenv import load_dotenv
+ 
+-load_dotenv()
++# Explicit, deterministic .env resolution instead of relying on
++# load_dotenv()'s default frame-introspection search (which can behave
++# differently depending on how the process was launched — e.g. uv run's
++# --reload subprocess). Checked in order:
++#   1. drmagent/.env       (next to this file — the package directory)
++#   2. <project root>/.env (one level up, alongside pyproject.toml)
++_PACKAGE_DIR = Path(__file__).resolve().parent
++_ENV_CANDIDATES = [
++    _PACKAGE_DIR / ".env",
++    _PACKAGE_DIR.parent / ".env",
++]
++
++for _candidate in _ENV_CANDIDATES:
++    if _candidate.is_file():
++        load_dotenv(_candidate)
++        break
++else:
++    # Neither known location has one; still try the default search as a
++    # last resort rather than silently running on defaults only.
++    load_dotenv()
+ 
+ 
+ @dataclass(frozen=True)
+@@ -11,6 +31,18 @@ class Settings:
+     ngo_username: str = os.getenv("NGO_USERNAME", "ngo_admin")
+     ngo_password: str = os.getenv("NGO_PASSWORD", "change-me")
+ 
++    # When true, the app skips real Google OAuth and Gmail API calls and
++    # uses drmagent.gmail.mock_service.MockGmailService instead, which
++    # serves a fixed set of scripted donor conversations covering every
++    # branch of the pipeline (Thank You / Follow-Up / Outreach / each
++    # Human Review trigger / no-history / low-confidence). This exists so
++    # the full pipeline — including "sending" a reply — can be exercised
++    # and demoed without needing real donor email history or live Google
++    # OAuth credentials configured.
++    use_mock_gmail: bool = os.getenv("USE_MOCK_GMAIL", "false").strip().lower() in (
++        "1", "true", "yes", "on",
++    )
++
+     google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
+     google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
+     google_redirect_uri: str = os.getenv(
+diff --git a/drmagent/drm/agent.py b/drmagent/drm/agent.py
+index d329e1f..af4e070 100644
+--- a/drmagent/drm/agent.py
++++ b/drmagent/drm/agent.py
+@@ -93,12 +93,6 @@ def classify_and_plan(agent: Agent, profile: DonorProfile) -> tuple[ActionClassi
+     )
+ 
+     # The classification and planning calls are two independent generations.
+-    # Nothing in the model API guarantees they agree, even with the
+-    # instruction above, so that agreement is verified in code rather than
+-    # trusted. Classification is authoritative here: planning's role is to
+-    # execute a decision, not make one. On any mismatch, side with the
+-    # earlier, narrower classification call and record the discrepancy so
+-    # it's visible instead of silently overwritten.
+     if plan.action != classification.action:
+         plan.consistency_notes.append(
+             f"Plan action '{plan.action}' did not match classified action "
+diff --git a/drmagent/gmail/service.py b/drmagent/gmail/service.py
+index 6e09552..8dda6aa 100644
+--- a/drmagent/gmail/service.py
++++ b/drmagent/gmail/service.py
+@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
+ from google.oauth2.credentials import Credentials
+ from googleapiclient.discovery import build
+ 
+-from drmagent.models import DonorConversation, EmailMessage
++from drmagent.models import DonorConversation, EmailMessage, GmailContext
+ 
+ 
+ class GmailService:
+@@ -197,3 +197,37 @@ class GmailService:
+         )
+ 
+         return result
++
++
++def get_gmail_context(
++    conversations: list[DonorConversation],
++) -> GmailContext | None:
++    """Pick which existing Gmail message a reply should be attached to.
++
++    Strategy: reply to the most recent message across every thread we
++    fetched for this donor (by internal timestamp), and thread it into
++    that message's thread. This is deliberately simple and deterministic
++    — it is never inferred by an LLM — so "what are we replying to" is
++    always traceable back to a real, existing Gmail message.
++
++    Returns None when the donor has no conversation history at all (or
++    every fetched thread came back with zero messages), which the caller
++    uses to skip execution rather than fabricate a thread to reply into.
++    """
++
++    latest_message: EmailMessage | None = None
++    latest_thread_id: str | None = None
++
++    for conversation in conversations:
++        for message in conversation.messages:
++            if latest_message is None or message.timestamp > latest_message.timestamp:
++                latest_message = message
++                latest_thread_id = conversation.thread_id
++
++    if latest_message is None or latest_thread_id is None:
++        return None
++
++    return GmailContext(
++        thread_id=latest_thread_id,
++        message_id=latest_message.id,
++    )
+diff --git a/drmagent/main.py b/drmagent/main.py
+index 69031ad..8c16a8b 100644
+--- a/drmagent/main.py
++++ b/drmagent/main.py
+@@ -1,3 +1,4 @@
++import json
+ import secrets
+ import time
+ from pathlib import Path
+@@ -6,24 +7,23 @@ from typing import Any
+ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+ from fastapi.responses import RedirectResponse
+ from fastapi.staticfiles import StaticFiles
++from google.oauth2.credentials import Credentials
+ 
+ from drmagent.config import settings
+ from drmagent.gmail.auth import create_authorization_url, exchange_code
++from drmagent.gmail.mock_service import MockGmailService
+ from drmagent.gmail.service import GmailService
+-from drmagent.models import DonorRecord
++from drmagent.models import DonorRecord, LoginRequest
+ from drmagent.orchestrator import load_donors_from_csv, process_donor
+ from drmagent.security import decrypt_credentials, encrypt_credentials
+ 
++# Sentinel stored in session["gmail_credentials"] when USE_MOCK_GMAIL=true,
++# so the truthiness checks used everywhere else ("has the user connected
++# Gmail?") keep working without a real OAuth token ever existing.
++_MOCK_CREDENTIALS_MARKER = "mock"
++
+ app = FastAPI(title="DRM Agent", version="1.0.0")
+ 
+-# Demo-only in-memory state. Replace with a database/secure session store in
+-# production. Two things were hardened even within that constraint:
+-#   - gmail_credentials are Fernet-encrypted before being stored here (see
+-#     drmagent/security.py), so a memory dump / logging accident / future
+-#     bug that serializes `sessions` doesn't hand over a live Gmail token.
+-#   - entries are swept for staleness (see `_sweep_expired`) so a session
+-#     dict that's never explicitly logged out of doesn't grow forever and
+-#     doesn't stay "valid" indefinitely.
+ sessions: dict[str, dict[str, Any]] = {}
+ oauth_states: dict[str, dict[str, str]] = {}
+ donor_records: list[DonorRecord] = []
+@@ -55,22 +55,56 @@ def _session(request: Request) -> dict[str, Any]:
+     return sessions[token]
+ 
+ 
++def _json_with_session_cookie(payload: dict[str, Any], login_token: str):
++    from fastapi.responses import JSONResponse
++
++    response = JSONResponse(payload)
++    response.set_cookie(
++        "session_token", login_token, httponly=True,
++        max_age=settings.session_ttl_seconds, samesite="lax",
++    )
++    return response
++
++
+ @app.get("/")
+ def root():
+     return {"service": "DRM Agent", "status": "ok"}
+ 
+-
+ @app.post("/login")
+-def login(username: str, password: str):
+-    if username != settings.ngo_username or password != settings.ngo_password:
++def login(payload: LoginRequest):
++    if (
++        payload.username != settings.ngo_username
++        or payload.password != settings.ngo_password
++    ):
+         raise HTTPException(status_code=401, detail="Invalid credentials")
+ 
+     _sweep_expired()
+ 
+-    auth_url, state, code_verifier = create_authorization_url()
+-
+     login_token = secrets.token_urlsafe(32)
+ 
++    if settings.use_mock_gmail:
++        # Demo/testing mode: skip real Google OAuth entirely. The session
++        # is immediately "Gmail connected" using the fixture donor
++        # conversations in gmail/mock_service.py.
++        sessions[login_token] = {
++            "authenticated": True,
++            "gmail_credentials": _MOCK_CREDENTIALS_MARKER,
++        }
++        _session_created_at[login_token] = time.time()
++        response = _json_with_session_cookie(
++            {
++                "message": (
++                    "Mock Gmail mode is active (USE_MOCK_GMAIL=true) -- "
++                    "skipping real Google authorization."
++                ),
++                "mock": True,
++            },
++            login_token,
++        )
++        return response
++
++    auth_url, state, code_verifier = create_authorization_url()
++
+     oauth_states[state] = {
+         "login_token": login_token,
+         "code_verifier": code_verifier,
+@@ -78,8 +112,11 @@ def login(username: str, password: str):
+     _oauth_state_created_at[state] = time.time()
+     sessions[login_token] = {"authenticated": True, "gmail_credentials": None}
+     _session_created_at[login_token] = time.time()
+-    return {"message": "Credentials accepted. Authorize Gmail next.", "google_auth_url": auth_url}
+-
++    return {
++        "message": "Credentials accepted. Authorize Gmail next.",
++        "google_auth_url": auth_url,
++        "mock": False,
++    }
+ 
+ @app.get("/auth/google/callback")
+ def google_callback(code: str, state: str):
+@@ -165,70 +202,35 @@ def list_donors(request: Request):
+     return {"count": len(donor_records), "donors": [d.model_dump() for d in donor_records]}
+ 
+ 
+-@app.post("/donors/process")
+-def process_donors(request: Request):
+-    session = _session(request)
+-    if not session.get("gmail_credentials"):
+-        raise HTTPException(status_code=400, detail="Gmail authorization is required")
+-    if not donor_records:
+-        raise HTTPException(status_code=400, detail="Upload donor CSV first")
++def _build_gmail_service(session: dict[str, Any]) -> GmailService | MockGmailService:
++    """Build the Gmail client for this session: the scripted MockGmailService
++    when USE_MOCK_GMAIL=true, otherwise a real GmailService from the
++    session's encrypted OAuth credentials."""
++    if settings.use_mock_gmail:
++        return MockGmailService()
+ 
+-    from google.oauth2.credentials import Credentials
+     decrypted_json = decrypt_credentials(session["gmail_credentials"])
+-    credentials = Credentials.from_authorized_user_info(
+-        __import__("json").loads(decrypted_json)
+-    )
+-    gmail = GmailService(
++    credentials = Credentials.from_authorized_user_info(json.loads(decrypted_json))
++    return GmailService(
+         credentials,
+         max_threads=settings.max_threads_per_donor,
+         max_messages_per_thread=settings.max_messages_per_thread,
+     )
+-    results = [process_donor(gmail, donor) for donor in donor_records]
+-    return {"count": len(results), "results": results}
+ 
+ 
+-# Serve the SPA frontend at /app/ (and /app/index.html). Mounted after every
+-# API route above so it can never shadow them — StaticFiles with html=True
+-# serves index.html for directory-style requests, which is what the
+-# frontend's history.replaceState({}, '', '/app/') and
+-# window.location.href = '/app/' calls expect to land on.
+-_STATIC_APP_DIR = Path(__file__).resolve().parent/ "web"
+-app.mount("/app", StaticFiles(directory=_STATIC_APP_DIR, html=True), name="app")
+-@app.post("/test/gmail-reply")
+-def test_gmail_reply(request: Request):
++@app.post("/donors/process")
++def process_donors(request: Request):
+     session = _session(request)
+-
+     if not session.get("gmail_credentials"):
+-        raise HTTPException(
+-            status_code=400,
+-            detail="Gmail authorization is required",
+-        )
+-
+-    from google.oauth2.credentials import Credentials
+-    credentials = Credentials.from_authorized_user_info(
+-        __import__("json").loads(session["gmail_credentials"])
+-    )
+-
+-    gmail = GmailService(
+-        credentials,
+-        max_threads=settings.max_threads_per_donor,
+-        max_messages_per_thread=settings.max_messages_per_thread,
+-    )
+-
+-    result = gmail.send_reply(
+-        thread_id="1a096798792ca6ef",
+-        message_id="1a0967ab3c430a11",
+-        to="cairen.in@gmail.com",
+-        subject="Re: Test Gmail Reply",
+-        body="""Hi,
++        raise HTTPException(status_code=400, detail="Gmail authorization is required")
++    if not donor_records:
++        raise HTTPException(status_code=400, detail="Upload donor CSV first")
+ 
+-        This is a test reply from the DRMAgent Gmail execution layer.
++    gmail = _build_gmail_service(session)
++    results = [process_donor(gmail, donor) for donor in donor_records]
++    return {"count": len(results), "results": results}
+ 
+-        Regards,
+-        DRMAgent""",
+-    )
+ 
+-    return {
+-        "status": "sent",
+-        "gmail_response": result,
+-    }
++# Serve the SPA frontend at /app/ (and /web/index.html).
++_STATIC_APP_DIR = Path(__file__).resolve().parent / "web"
++app.mount("/app", StaticFiles(directory=_STATIC_APP_DIR, html=True), name="app")
+diff --git a/drmagent/models.py b/drmagent/models.py
+index 79b0f14..863c070 100644
+--- a/drmagent/models.py
++++ b/drmagent/models.py
+@@ -3,6 +3,9 @@ from typing import Literal, Optional
+ 
+ from pydantic import BaseModel, Field
+ 
++class LoginRequest(BaseModel):
++    username: str
++    password: str
+ 
+ class DonorRecord(BaseModel):
+     donor_id: str
+@@ -95,3 +98,41 @@ class DonorActionState(BaseModel):
+     donor_id: str
+     last_action: Optional[Action] = None
+     last_action_at: Optional[str] = None  # ISO-8601 timestamp
++
++
++class GmailContext(BaseModel):
++    """Identifies which existing Gmail message/thread a reply should be
++    attached to. Produced by `get_gmail_context()` from the donor's fetched
++    conversations — never guessed by an LLM."""
++
++    thread_id: str
++    message_id: str
++
++
++class EmailDraft(BaseModel):
++    """The email the execution agent produces. Deliberately minimal: only
++    what's needed to actually send a reply. The agent must not invent the
++    recipient — `to` should always resolve to the donor's known email."""
++
++    to: str
++    subject: str
++    body: str
++
++
++class ExecutionResult(BaseModel):
++    """Result of the execution stage, before/after the Gmail send.
++
++    status:
++      - "drafted": the execution agent produced an EmailDraft (the
++        orchestrator will attempt to send it next).
++      - "sent": the orchestrator successfully sent the drafted email.
++      - "not_executed": nothing to execute (e.g. no Gmail thread context).
++      - "error": drafting or sending failed; see `reason`.
++    """
++
++    status: Literal["drafted", "sent", "not_executed", "error"] = "drafted"
++    thread_id: Optional[str] = None
++    message_id: Optional[str] = None
++    email: Optional[EmailDraft] = None
++    gmail_message_id: Optional[str] = None
++    reason: Optional[str] = None
+diff --git a/drmagent/orchestrator.py b/drmagent/orchestrator.py
+index f0b22a2..1a9f8b6 100644
+--- a/drmagent/orchestrator.py
++++ b/drmagent/orchestrator.py
+@@ -5,9 +5,10 @@ import logging
+ from drmagent.config import settings
+ from drmagent.drm.agent import create_drm_agent, classify_and_plan
+ from drmagent.drm.approval import apply_human_approval_policy
+-from drmagent.gmail.service import GmailService
++from drmagent.drm.execution_agent import create_execution_agent, execute_plan
++from drmagent.gmail.service import GmailService, get_gmail_context
+ from drmagent.models import DonorRecord
+-from drmagent.profile.service import build_donor_profile
++from drmagent.profile.service import build_donor_profile, format_conversations
+ from drmagent.state_store import DonorStateStore, is_in_cooldown
+ 
+ logger = logging.getLogger(__name__)
+@@ -105,64 +106,77 @@ def _process_donor_inner(gmail: GmailService, donor: DonorRecord) -> dict:
+     if not plan.requires_human_approval:
+         gmail_context = get_gmail_context(conversations)
+ 
+-        if gmail_context:
+-            execution_agent = create_execution_agent()
+-
+-            conversation_context = format_conversations(
+-                conversations,
+-                settings.max_conversation_chars,
+-            )
+-
+-            execution_result = execute_plan(
+-                agent=execution_agent,
+-                profile=profile,
+-                classification=classification,
+-                plan=plan,
+-                thread_id=gmail_context.thread_id,
+-                message_id=gmail_context.message_id,
+-                conversation_context=conversation_context,
+-            )
+-
+-            if (
+-                execution_result.status == "drafted"
+-                and execution_result.email is not None
+-            ):
+-                email = execution_result.email
+-
+-                gmail_result = gmail.send_reply(
+-                    thread_id=execution_result.thread_id,
+-                    message_id=execution_result.message_id,
+-                    to=email.to,
+-                    subject=email.subject,
+-                    body=email.body,
++        if gmail_context is None:
++            execution = {
++                "status": "not_executed",
++                "reason": "No Gmail thread/message context available.",
++            }
++        else:
++            try:
++                execution_agent = create_execution_agent()
++
++                conversation_context = format_conversations(
++                    conversations,
++                    settings.max_conversation_chars,
+                 )
+ 
+-                execution = {
+-                    "status": "sent",
+-                    "thread_id": execution_result.thread_id,
+-                    "message_id": execution_result.message_id,
+-                    "gmail_message_id": gmail_result.get("id"),
+-                    "email": email.model_dump(),
+-                }
++                execution_result = execute_plan(
++                    agent=execution_agent,
++                    profile=profile,
++                    classification=classification,
++                    plan=plan,
++                    thread_id=gmail_context.thread_id,
++                    message_id=gmail_context.message_id,
++                    conversation_context=conversation_context,
++                )
++
++                if (
++                    execution_result.status == "drafted"
++                    and execution_result.email is not None
++                ):
++                    email = execution_result.email
++
++                    # Drafting succeeded; the actual Gmail send is a
++                    # separate failure mode (auth/scopes/API errors) and
++                    # shouldn't be conflated with a drafting failure, so
++                    # it's wrapped separately below.
++                    try:
++                        gmail_result = gmail.send_reply(
++                            thread_id=execution_result.thread_id,
++                            message_id=execution_result.message_id,
++                            to=email.to,
++                            subject=email.subject,
++                            body=email.body,
++                        )
++                        execution_result.status = "sent"
++                        execution_result.gmail_message_id = gmail_result.get("id")
++                    except Exception as send_exc:  # noqa: BLE001
++                        logger.exception(
++                            "Gmail send_reply failed for donor_id=%s",
++                            donor.donor_id,
++                        )
++                        execution_result.status = "error"
++                        execution_result.reason = (
++                            f"Draft was created but sending failed: "
++                            f"{send_exc.__class__.__name__}: {send_exc}"
++                        )
+ 
+-            else:
+                 execution = execution_result.model_dump()
+ 
+-            # execution = execute_plan(
+-            #     agent=execution_agent,
+-            #     profile=profile,
+-            #     classification=classification,
+-            #     plan=plan,
+-            #     thread_id=gmail_context.thread_id,
+-            #     message_id=gmail_context.message_id,
+-            #     conversation_context=conversation_context,
+-            # )
+-            # execution = execution_result.model_dump()
+-        else:
+-            execution = {
+-                "status": "not_executed",
+-                "reason": "No Gmail thread/message context available.",
+-            }
++            except Exception as exec_exc:  # noqa: BLE001
++                logger.exception(
++                    "Execution stage failed for donor_id=%s",
++                    donor.donor_id,
++                )
++                execution = {
++                    "status": "error",
++                    "thread_id": gmail_context.thread_id,
++                    "message_id": gmail_context.message_id,
++                    "reason": (
++                        f"Execution agent failed: "
++                        f"{exec_exc.__class__.__name__}: {exec_exc}"
++                    ),
++                }
+ 
+     # ------------------------------------------------------------------
+     # 5. Return planning + approval information.
+@@ -179,6 +193,7 @@ def _process_donor_inner(gmail: GmailService, donor: DonorRecord) -> dict:
+             "requires_human_approval": plan.requires_human_approval,
+             "reason": approval_reasons,
+         },
++        "execution": execution,
+         "cooldown_suppressed": suppressed_for_cooldown,
+     }
+ 
+@@ -210,5 +225,6 @@ def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
+                 "requires_human_approval": True,
+                 "reason": [f"Unhandled processing error: {exc.__class__.__name__}: {exc}"],
+             },
++            "execution": None,
+             "cooldown_suppressed": False,
+         }
+diff --git a/drmagent/profile/agents.py b/drmagent/profile/agents.py
+index d070403..96ec959 100644
+--- a/drmagent/profile/agents.py
++++ b/drmagent/profile/agents.py
+@@ -16,17 +16,6 @@ def _model(model_id: str) -> OpenAIModel:
+     )
+ 
+ 
+-# NOTE: Classification and planning used to also be defined here
+-# (create_classification_agent / create_planning_agent / classify() /
+-# plan()), as a second, independently-maintained copy of the same policy
+-# implemented in drmagent/drm/agent.py. The orchestrator only ever called
+-# the drm/agent.py version, so this module's copy was dead code that could
+-# silently drift out of sync with the real decision logic (e.g. a new
+-# Human Review trigger added to one prompt and forgotten in the other).
+-# It has been removed. drmagent/drm/agent.py is now the single source of
+-# truth for classification + planning.
+-
+-
+ def create_consolidation_agent() -> Agent:
+     return Agent(
+         model=_model(settings.consolidation_model),
+diff --git a/drmagent/requirements.txt b/drmagent/requirements.txt
+index 74624b5..fb8c953 100644
+--- a/drmagent/requirements.txt
++++ b/drmagent/requirements.txt
+@@ -1,3 +1,12 @@
+ strands-agents>=1.0.0
+ strands-agents-tools>=0.2.0
+-cryptography>=42.0.0
+\ No newline at end of file
++cryptography>=42.0.0
++fastapi>=0.110.0
++uvicorn[standard]>=0.29.0
++python-dotenv>=1.0.0
++pydantic>=2.6.0
++google-auth-oauthlib>=1.2.0
++google-auth>=2.29.0
++google-api-python-client>=2.120.0
++beautifulsoup4>=4.12.0
++python-multipart>=0.0.9
+diff --git a/drmagent/web/index.html b/drmagent/web/index.html
+index 7a1dd12..cf9d0ee 100644
+--- a/drmagent/web/index.html
++++ b/drmagent/web/index.html
+@@ -419,10 +419,26 @@
+     const btn = $('loginBtn');
+     btn.disabled = true;
+     try {
+-      const data = await api(`/login?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`, { method: 'POST' });
+-      $('googleAuthLink').href = data.google_auth_url;
+-      setStatusPill('Credentials verified · connect Gmail', 'on');
+-      unlock(1);
++      const data = await api('/login', {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json'
++        },
++        body: JSON.stringify({
++          username,
++          password
++        })
++      });
++      if (data.mock) {
++        gmailConnected = true;
++        setStatusPill('Mock Gmail mode · ready', 'ready');
++        banner('ok', 'Mock Gmail mode active — using built-in sample donor conversations.');
++        unlock(2);
++      } else {
++        $('googleAuthLink').href = data.google_auth_url;
++        setStatusPill('Credentials verified · connect Gmail', 'on');
++        unlock(1);
++      }
+     } catch (e) {
+       banner('error', e.message);
+     } finally {
+@@ -548,33 +564,65 @@
+     }[action] || 'wait';
+   }
+ 
++  function executionBlock(execution){
++    if (!execution) return '';
++    const status = execution.status;
++    if (status === 'sent') {
++      const email = execution.email || {};
++      return `<div class="approval" style="background:var(--teal-tint);color:var(--teal);">
++        <strong>Sent to ${escapeHtml(email.to || '')}</strong>
++        <div class="line"><span class="label">Subject:</span> ${escapeHtml(email.subject || '')}</div>
++        <details><summary>Email body</summary><pre>${escapeHtml(email.body || '')}</pre></details>
++      </div>`;
++    }
++    if (status === 'drafted') {
++      const email = execution.email || {};
++      return `<div class="approval"><strong>Drafted (not yet sent)</strong>
++        <div class="line"><span class="label">Subject:</span> ${escapeHtml(email.subject || '')}</div>
++        <details><summary>Email body</summary><pre>${escapeHtml(email.body || '')}</pre></details>
++      </div>`;
++    }
++    if (status === 'error') {
++      return `<div class="approval" style="background:var(--red-tint);color:var(--red);">
++        <strong>Execution error</strong><div class="line">${escapeHtml(execution.reason || '')}</div>
++      </div>`;
++    }
++    if (status === 'not_executed') {
++      return `<div class="line"><span class="label">Execution:</span> ${escapeHtml(execution.reason || 'Not executed.')}</div>`;
++    }
++    return '';
++  }
++
+   function renderResults(payload){
+     const results = payload.results || [];
+     const approvals = results.filter(r => r.approval.requires_human_approval).length;
++    const sent = results.filter(r => r.execution && r.execution.status === 'sent').length;
+     $('summaryBar').innerHTML = `
+       <div class="stat"><b>${results.length}</b>Donors processed</div>
+       <div class="stat"><b>${approvals}</b>Need approval</div>
++      <div class="stat"><b>${sent}</b>Emails sent</div>
+     `;
+ 
+     if (!results.length){ $('resultsWrap').innerHTML = '<div class="empty">No results yet.</div>'; return; }
+ 
+     $('resultsWrap').innerHTML = results.map(r => {
+       const donor = r.donor, plan = r.plan, approval = r.approval;
++      const classification = r.classification || { action: plan.action, reason: '(processing failed before classification)' };
+       const approvalBlock = approval.requires_human_approval
+         ? `<div class="approval"><strong>Needs human approval</strong>
+              <ul>${approval.reason.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`
+-        : '';
++        : executionBlock(r.execution);
+       return `
+         <div class="result">
+           <div class="result-head">
+             <div class="who">${escapeHtml(donor.name || donor.donor_id)}
+               <span class="email">${escapeHtml(donor.email)}</span>
+             </div>
+-            <span class="badge ${actionClass(r.classification.action)}">${escapeHtml(r.classification.action)}</span>
++            <span class="badge ${actionClass(classification.action)}">${escapeHtml(classification.action)}</span>
+           </div>
+           <div class="result-body">
+             <div class="line"><span class="label">Threads found:</span> ${r.conversation_count}</div>
+-            <div class="line"><span class="label">Reason:</span> ${escapeHtml(r.classification.reason)}</div>
++            <div class="line"><span class="label">Reason:</span> ${escapeHtml(classification.reason)}</div>
+             <div class="line"><span class="label">Next step:</span> ${escapeHtml(plan.next_step)}</div>
+             ${approvalBlock}
+             <details><summary>Raw JSON</summary><pre>${escapeHtml(JSON.stringify(r, null, 2))}</pre></details>

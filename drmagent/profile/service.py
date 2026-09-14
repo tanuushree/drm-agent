@@ -1,7 +1,7 @@
 from collections import defaultdict
 
 from drmagent.gmail.service import GmailService
-from drmagent.models import DonorConversation, DonorRecord, DonorProfile, GmailContext
+from drmagent.models import DonorConversation, DonorRecord, DonorProfile
 from drmagent.profile.agents import (
     consolidate,
     create_consolidation_agent,
@@ -26,31 +26,6 @@ def format_conversations(conversations: list[DonorConversation], max_chars: int)
 
     combined = "\n\n".join(blocks)
     return combined[:max_chars] + ("\n\n[...truncated...]" if len(combined) > max_chars else "")
-
-def get_gmail_context(
-    conversations: list[DonorConversation],
-) -> GmailContext | None:
-    """Return Gmail context for the most recent message."""
-
-    messages = [
-        message
-        for conversation in conversations
-        for message in conversation.messages
-        if message.id and message.thread_id
-    ]
-
-    if not messages:
-        return None
-
-    latest_message = max(
-        messages,
-        key=lambda message: message.timestamp,
-    )
-
-    return GmailContext(
-        thread_id=latest_message.thread_id,
-        message_id=latest_message.id,
-    )
 
 
 def build_donor_profile(
