@@ -1,15 +1,47 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Explicit, deterministic .env resolution instead of relying on
+# load_dotenv()'s default frame-introspection search (which can behave
+# differently depending on how the process was launched — e.g. uv run's
+# --reload subprocess). Checked in order:
+#   1. drmagent/.env       (next to this file — the package directory)
+#   2. <project root>/.env (one level up, alongside pyproject.toml)
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_ENV_CANDIDATES = [
+    _PACKAGE_DIR / ".env",
+    _PACKAGE_DIR.parent / ".env",
+]
+
+for _candidate in _ENV_CANDIDATES:
+    if _candidate.is_file():
+        load_dotenv(_candidate)
+        break
+else:
+    # Neither known location has one; still try the default search as a
+    # last resort rather than silently running on defaults only.
+    load_dotenv()
 
 
 @dataclass(frozen=True)
 class Settings:
     ngo_username: str = os.getenv("NGO_USERNAME", "ngo_admin")
     ngo_password: str = os.getenv("NGO_PASSWORD", "change-me")
+
+    # When true, the app skips real Google OAuth and Gmail API calls and
+    # uses drmagent.gmail.mock_service.MockGmailService instead, which
+    # serves a fixed set of scripted donor conversations covering every
+    # branch of the pipeline (Thank You / Follow-Up / Outreach / each
+    # Human Review trigger / no-history / low-confidence). This exists so
+    # the full pipeline — including "sending" a reply — can be exercised
+    # and demoed without needing real donor email history or live Google
+    # OAuth credentials configured.
+    use_mock_gmail: bool = os.getenv("USE_MOCK_GMAIL", "false").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
     google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
     google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")

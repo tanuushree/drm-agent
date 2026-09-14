@@ -5,7 +5,6 @@ from drmagent.config import settings
 from drmagent.drm.agent import create_drm_agent, classify_and_plan
 from drmagent.drm.approval import apply_human_approval_policy
 from drmagent.drm.execution_agent import create_execution_agent, execute_plan
-from drmagent.gmail.service import GmailService
 from drmagent.models import (
     ActionClassification,
     ActionPlan,
@@ -16,6 +15,12 @@ from drmagent.profile.service import (
     get_gmail_context,
     format_conversations,
 )
+from drmagent.gmail.service import GmailService, get_gmail_context
+from drmagent.state_store import DonorStateStore, is_in_cooldown
+
+logger = logging.getLogger(__name__)
+
+_state_store = DonorStateStore(settings.donor_state_path)
 
 
 def load_donors_from_csv(content: bytes) -> list[DonorRecord]:
@@ -216,6 +221,77 @@ Requirements:
 
             else:
                 execution = execution_result.model_dump()
+        if gmail_context is None:
+            execution = {
+                "status": "not_executed",
+                "reason": "No Gmail thread/message context available.",
+            }
+        else:
+            try:
+                execution_agent = create_execution_agent()
+
+                conversation_context = format_conversations(
+                    conversations,
+                    settings.max_conversation_chars,
+                )
+
+                execution_result = execute_plan(
+                    agent=execution_agent,
+                    profile=profile,
+                    classification=classification,
+                    plan=plan,
+                    thread_id=gmail_context.thread_id,
+                    message_id=gmail_context.message_id,
+                    conversation_context=conversation_context,
+                )
+
+                if (
+                    execution_result.status == "drafted"
+                    and execution_result.email is not None
+                ):
+                    email = execution_result.email
+
+                    # Drafting succeeded; the actual Gmail send is a
+                    # separate failure mode (auth/scopes/API errors) and
+                    # shouldn't be conflated with a drafting failure, so
+                    # it's wrapped separately below.
+                    try:
+                        gmail_result = gmail.send_reply(
+                            thread_id=execution_result.thread_id,
+                            message_id=execution_result.message_id,
+                            to=email.to,
+                            subject=email.subject,
+                            body=email.body,
+                        )
+                        execution_result.status = "sent"
+                        execution_result.gmail_message_id = gmail_result.get("id")
+                    except Exception as send_exc:  # noqa: BLE001
+                        logger.exception(
+                            "Gmail send_reply failed for donor_id=%s",
+                            donor.donor_id,
+                        )
+                        execution_result.status = "error"
+                        execution_result.reason = (
+                            f"Draft was created but sending failed: "
+                            f"{send_exc.__class__.__name__}: {send_exc}"
+                        )
+
+                execution = execution_result.model_dump()
+
+            except Exception as exec_exc:  # noqa: BLE001
+                logger.exception(
+                    "Execution stage failed for donor_id=%s",
+                    donor.donor_id,
+                )
+                execution = {
+                    "status": "error",
+                    "thread_id": gmail_context.thread_id,
+                    "message_id": gmail_context.message_id,
+                    "reason": (
+                        f"Execution agent failed: "
+                        f"{exec_exc.__class__.__name__}: {exec_exc}"
+                    ),
+                }
 
     # ------------------------------------------------------------------
     # 5. Return planning + approval + execution information.
@@ -232,3 +308,37 @@ Requirements:
         },
         "execution": execution,
     }
+        "cooldown_suppressed": suppressed_for_cooldown,
+    }
+
+
+def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
+    """Process a single donor, never letting an unexpected failure here take
+    down the rest of a batch run. Any unhandled error is itself treated as a
+    reason for human review rather than as a crash."""
+
+    try:
+        return _process_donor_inner(gmail, donor)
+    except Exception as exc:  # noqa: BLE001 - deliberate top-level fail-safe
+        logger.exception("process_donor failed for donor_id=%s", donor.donor_id)
+        return {
+            "donor": donor.model_dump(),
+            "conversation_count": 0,
+            "profile": None,
+            "classification": None,
+            "plan": {
+                "donor_id": donor.donor_id,
+                "action": "Human Review",
+                "objective": "Recover from an unhandled processing error.",
+                "recommended_action": "Escalate to a human before any donor communication.",
+                "next_step": "Human approval required.",
+                "requires_human_approval": True,
+                "consistency_notes": [f"Unhandled error during processing: {exc}"],
+            },
+            "approval": {
+                "requires_human_approval": True,
+                "reason": [f"Unhandled processing error: {exc.__class__.__name__}: {exc}"],
+            },
+            "execution": None,
+            "cooldown_suppressed": False,
+        }

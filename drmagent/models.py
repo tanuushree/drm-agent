@@ -3,6 +3,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 class DonorRecord(BaseModel):
     donor_id: str
@@ -92,9 +95,54 @@ class EmailDraft(BaseModel):
     body: str
 
 
+# class ExecutionResult(BaseModel):
+#     status: Literal["drafted", "not_executed"]
+#     thread_id: Optional[str] = None
+#     message_id: Optional[str] = None
+#     email: Optional[EmailDraft] = None
+#     reason: Optional[str] = None
+class DonorActionState(BaseModel):
+    """Persisted record of the last action taken for a donor, used to avoid
+    re-triggering the same low-stakes outbound action on every run."""
+
+    donor_id: str
+    last_action: Optional[Action] = None
+    last_action_at: Optional[str] = None  # ISO-8601 timestamp
+
+
+class GmailContext(BaseModel):
+    """Identifies which existing Gmail message/thread a reply should be
+    attached to. Produced by `get_gmail_context()` from the donor's fetched
+    conversations — never guessed by an LLM."""
+
+    thread_id: str
+    message_id: str
+
+
+class EmailDraft(BaseModel):
+    """The email the execution agent produces. Deliberately minimal: only
+    what's needed to actually send a reply. The agent must not invent the
+    recipient — `to` should always resolve to the donor's known email."""
+
+    to: str
+    subject: str
+    body: str
+
+
 class ExecutionResult(BaseModel):
-    status: Literal["drafted", "not_executed"]
+    """Result of the execution stage, before/after the Gmail send.
+
+    status:
+      - "drafted": the execution agent produced an EmailDraft (the
+        orchestrator will attempt to send it next).
+      - "sent": the orchestrator successfully sent the drafted email.
+      - "not_executed": nothing to execute (e.g. no Gmail thread context).
+      - "error": drafting or sending failed; see `reason`.
+    """
+
+    status: Literal["drafted", "sent", "not_executed", "error"] = "drafted"
     thread_id: Optional[str] = None
     message_id: Optional[str] = None
     email: Optional[EmailDraft] = None
+    gmail_message_id: Optional[str] = None
     reason: Optional[str] = None

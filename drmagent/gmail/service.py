@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from drmagent.models import DonorConversation, EmailMessage
+from drmagent.models import DonorConversation, EmailMessage, GmailContext
 
 
 class GmailService:
@@ -238,3 +238,36 @@ class GmailService:
     
                 return result
     
+
+def get_gmail_context(
+    conversations: list[DonorConversation],
+) -> GmailContext | None:
+    """Pick which existing Gmail message a reply should be attached to.
+
+    Strategy: reply to the most recent message across every thread we
+    fetched for this donor (by internal timestamp), and thread it into
+    that message's thread. This is deliberately simple and deterministic
+    — it is never inferred by an LLM — so "what are we replying to" is
+    always traceable back to a real, existing Gmail message.
+
+    Returns None when the donor has no conversation history at all (or
+    every fetched thread came back with zero messages), which the caller
+    uses to skip execution rather than fabricate a thread to reply into.
+    """
+
+    latest_message: EmailMessage | None = None
+    latest_thread_id: str | None = None
+
+    for conversation in conversations:
+        for message in conversation.messages:
+            if latest_message is None or message.timestamp > latest_message.timestamp:
+                latest_message = message
+                latest_thread_id = conversation.thread_id
+
+    if latest_message is None or latest_thread_id is None:
+        return None
+
+    return GmailContext(
+        thread_id=latest_thread_id,
+        message_id=latest_message.id,
+    )

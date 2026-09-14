@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DRM Agent</title>
+<style>
+  :root{
+    --ink:#16231F;
+    --ink-soft:#223129;
+    --paper:#F3F5F1;
+    --card:#FFFFFF;
+    --line:#DCE3DD;
+    --muted:#5B6B63;
+    --gold:#E2A63B;
+    --gold-tint:#FBEED2;
+    --teal:#2F6F62;
+    --teal-tint:#E1EEEA;
+    --blue:#35618F;
+    --blue-tint:#E4ECF3;
+    --clay:#B0592E;
+    --clay-tint:#F5E4DA;
+    --red:#9C3B34;
+    --red-tint:#F3E1DE;
+    --wait:#8A9089;
+    --wait-tint:#ECEFEA;
+    --radius:12px;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{
+    font-family: ui-serif, Georgia, "Times New Roman", serif;
+    font-weight:600;
+    margin:0;
+  }
+  @media (prefers-reduced-motion: no-preference){
+    .page{ transition: opacity .35s ease, transform .35s ease; }
+    .rail li .stepnum{ transition: background .25s ease, color .25s ease, border-color .25s ease; }
+    button{ transition: opacity .15s ease, transform .1s ease; }
+  }
+
+  /* ---------- shell ---------- */
+  .shell{ display:flex; min-height:100vh; }
+
+  .rail{
+    width:270px; flex-shrink:0;
+    background:var(--ink); color:#EFF3EF;
+    padding:32px 24px;
+    display:flex; flex-direction:column;
+    position:sticky; top:0; height:100vh;
+  }
+  .brand{ display:flex; align-items:center; gap:10px; }
+  .brand .mark{ width:30px; height:30px; flex-shrink:0; }
+  .brand .word{ font-family:ui-serif, Georgia, serif; font-size:19px; font-weight:600; letter-spacing:.01em; }
+  .tagline{ color:#9FB0A6; font-size:12.5px; margin:6px 0 34px; padding-left:40px; }
+
+  .steps{ list-style:none; margin:0; padding:0; flex:1; }
+  .steps li{
+    display:flex; align-items:center; gap:12px;
+    padding:11px 8px; border-radius:8px; cursor:default;
+    color:#7E9089; font-size:13.5px;
+  }
+  .steps li.clickable{ cursor:pointer; }
+  .steps li.clickable:hover{ background:rgba(255,255,255,.06); }
+  .steps li .stepnum{
+    width:24px; height:24px; border-radius:50%; flex-shrink:0;
+    border:1.5px solid #435248;
+    display:flex; align-items:center; justify-content:center;
+    font-size:11.5px; font-weight:700; color:#7E9089;
+  }
+  .steps li.active .stepnum{ background:var(--gold); border-color:var(--gold); color:var(--ink); }
+  .steps li.active .steplabel{ color:#fff; font-weight:650; }
+  .steps li.done .stepnum{ background:var(--teal); border-color:var(--teal); color:#fff; }
+  .steps li.done .steplabel{ color:#CFE3DA; }
+  .steps li:focus-visible{ outline:2px solid var(--gold); outline-offset:2px; }
+
+  .rail-foot{ padding-top:18px; border-top:1px solid #2B3B32; }
+  .statuspill{ display:flex; align-items:center; gap:8px; font-size:12.5px; color:#9FB0A6; margin-bottom:12px; }
+  .dot{ width:7px; height:7px; border-radius:50%; background:#5B6B63; flex-shrink:0; }
+  .dot.on{ background:var(--gold); }
+  .dot.ready{ background:var(--teal); }
+
+  .stage{ flex:1; min-width:0; padding:56px 64px 90px; max-width:760px; }
+
+  .banners{ margin-bottom:20px; }
+  .banner{
+    border-radius:9px; padding:12px 15px; font-size:13.5px; margin-bottom:10px;
+    display:flex; justify-content:space-between; gap:12px; align-items:center;
+  }
+  .banner.error{ background:var(--red-tint); color:var(--red); }
+  .banner.ok{ background:var(--teal-tint); color:var(--teal); }
+  .banner button{ background:none; color:inherit; padding:0; font-size:16px; line-height:1; border:none; cursor:pointer; }
+
+  /* ---------- pages ---------- */
+  .page{ display:none; }
+  .page.active{ display:block; }
+  .eyebrow{ font-size:12.5px; color:var(--muted); margin-bottom:8px; }
+  .page h2{ font-size:26px; margin-bottom:8px; }
+  .page .lede{ color:var(--muted); font-size:14.5px; max-width:52ch; margin-bottom:30px; }
+
+  .field{ margin-bottom:16px; max-width:360px; }
+  .field label{ display:block; font-size:12.5px; color:var(--muted); margin-bottom:5px; }
+  input[type=text], input[type=password]{
+    width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+    font-size:14.5px; background:#fff; color:var(--ink);
+  }
+  input:focus{ outline:2px solid var(--gold); outline-offset:1px; }
+
+  button{
+    appearance:none; border:none; cursor:pointer; font-family:inherit;
+    background:var(--ink); color:#fff; font-size:14px; font-weight:600;
+    padding:11px 20px; border-radius:8px;
+  }
+  button:hover{ opacity:.88; }
+  button:active{ transform:translateY(1px); }
+  button:disabled{ cursor:default; opacity:.38; }
+  button.primary{ background:var(--gold); color:var(--ink); }
+  button.ghost{ background:transparent; color:#CFE3DA; border:1px solid #3B4A41; padding:8px 14px; font-size:13px; }
+  button.ghost:hover{ background:rgba(255,255,255,.06); opacity:1; }
+  button.link{ background:none; color:var(--ink); text-decoration:underline; padding:0; font-weight:500; }
+  button:focus-visible{ outline:2px solid var(--gold); outline-offset:2px; }
+
+  .actions{ display:flex; gap:12px; align-items:center; margin-top:22px; flex-wrap:wrap; }
+  .back{ font-size:13px; color:var(--muted); margin-top:26px; }
+
+  .note{ font-size:13px; color:var(--muted); margin-top:14px; max-width:48ch; }
+  .note strong{ color:var(--ink); }
+
+  /* dropzone */
+  .dropzone{
+    border:1.5px dashed var(--line); border-radius:var(--radius);
+    padding:34px 24px; text-align:center; cursor:pointer;
+    background:var(--card); max-width:460px;
+  }
+  .dropzone.drag{ border-color:var(--gold); background:var(--gold-tint); }
+  .dropzone.has-file{ border-color:var(--teal); background:var(--teal-tint); }
+  .dropzone .dz-title{ font-weight:650; font-size:14.5px; }
+  .dropzone .dz-sub{ font-size:12.5px; color:var(--muted); margin-top:4px; }
+
+  table{ width:100%; border-collapse:collapse; font-size:13.5px; margin-top:18px; max-width:460px; }
+  th, td{ text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); }
+  th{ color:var(--muted); font-weight:600; font-size:11.5px; text-transform:none; }
+
+  .pipeline-steps{ margin:0 0 8px; padding-left:20px; color:var(--muted); font-size:13.5px; max-width:48ch; }
+  .pipeline-steps li{ margin-bottom:4px; }
+
+  .runbox{
+    max-width:460px; border:1px solid var(--line); border-radius:var(--radius);
+    background:var(--card); padding:22px; margin-top:10px;
+  }
+  .runbox .phase{ display:flex; align-items:center; gap:10px; font-size:13.5px; color:var(--ink); min-height:20px; }
+  .runbox .timer{ font-size:12px; color:var(--muted); margin-top:6px; font-variant-numeric:tabular-nums; }
+  .spinner{
+    width:14px; height:14px; border-radius:50%; flex-shrink:0;
+    border:2px solid var(--line); border-top-color:var(--gold);
+    animation:spin .7s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  /* results */
+  .summary-bar{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:22px; }
+  .stat{
+    background:var(--card); border:1px solid var(--line); border-radius:9px;
+    padding:10px 14px; font-size:13px;
+  }
+  .stat b{ font-size:17px; display:block; font-family:ui-serif, Georgia, serif; }
+
+  .result{ border:1px solid var(--line); border-radius:var(--radius); margin-bottom:14px; overflow:hidden; background:var(--card); }
+  .result-head{ padding:15px 17px; display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  .result-head .who{ font-weight:650; font-size:14.5px; }
+  .result-head .who .email{ font-weight:400; color:var(--muted); font-size:12.5px; display:block; margin-top:1px; }
+  .badge{ font-size:11.5px; font-weight:650; padding:4px 10px; border-radius:99px; white-space:nowrap; }
+  .badge.thank-you{ background:var(--teal-tint); color:var(--teal); }
+  .badge.outreach{ background:var(--blue-tint); color:var(--blue); }
+  .badge.follow-up{ background:var(--clay-tint); color:var(--clay); }
+  .badge.wait{ background:var(--wait-tint); color:var(--muted); }
+  .badge.human-review{ background:var(--red-tint); color:var(--red); }
+
+  .result-body{ padding:0 17px 17px; font-size:13.5px; }
+  .result-body .line{ margin-bottom:6px; }
+  .result-body .label{ color:var(--muted); font-size:12px; }
+
+  .approval{ margin-top:11px; padding:11px 13px; border-radius:8px; background:var(--red-tint); color:var(--red); font-size:13px; }
+  .approval ul{ margin:6px 0 0; padding-left:18px; }
+
+  details{ margin-top:11px; }
+  summary{ cursor:pointer; font-size:12.5px; color:var(--muted); }
+  pre{ background:var(--paper); border:1px solid var(--line); border-radius:7px; padding:12px; font-size:11.5px; overflow:auto; max-height:320px; margin-top:8px; }
+
+  .empty{ color:var(--muted); font-size:13.5px; padding:20px 0; }
+
+  /* responsive */
+  @media (max-width: 860px){
+    .shell{ flex-direction:column; }
+    .rail{ width:100%; height:auto; position:relative; padding:20px 20px 14px; flex-direction:row; align-items:center; gap:18px; }
+    .tagline{ display:none; }
+    .steps{ display:flex; gap:4px; flex:1; }
+    .steps li{ flex-direction:column; gap:5px; font-size:0; padding:6px; }
+    .steps li .steplabel{ display:none; }
+    .rail-foot{ border:none; padding:0; }
+    .statuspill span:last-child{ display:none; }
+    .stage{ padding:34px 20px 60px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="rail" aria-label="Progress">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="1" y="6" width="30" height="21" rx="3" fill="none" stroke="#E2A63B" stroke-width="2"/>
+        <path d="M2 8 L16 19 L30 8" fill="none" stroke="#E2A63B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="word">DRM Agent</span>
+    </div>
+    <p class="tagline">Donor relationship copilot</p>
+
+    <ol class="steps" id="stepsList">
+      <li data-index="0"><span class="stepnum">1</span><span class="steplabel">Sign in</span></li>
+      <li data-index="1"><span class="stepnum">2</span><span class="steplabel">Connect Gmail</span></li>
+      <li data-index="2"><span class="stepnum">3</span><span class="steplabel">Upload donors</span></li>
+      <li data-index="3"><span class="stepnum">4</span><span class="steplabel">Run pipeline</span></li>
+      <li data-index="4"><span class="stepnum">5</span><span class="steplabel">Results</span></li>
+    </ol>
+
+    <div class="rail-foot">
+      <div class="statuspill"><span class="dot" id="statusDot"></span><span id="statusText">Not signed in</span></div>
+      <button class="ghost" id="logoutBtn" style="display:none;">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="stage">
+    <div class="banners" id="banners" aria-live="polite"></div>
+
+    <!-- Step 1: Login -->
+    <section class="page" data-page="0">
+      <div class="eyebrow">Step 1 of 5</div>
+      <h2>Sign in</h2>
+      <p class="lede">Use your NGO application credentials. Gmail authorization comes next, as a separate step.</p>
+
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" autocomplete="current-password" />
+      </div>
+      <div class="actions">
+        <button class="primary" id="loginBtn">Sign in</button>
+      </div>
+    </section>
+
+    <!-- Step 2: Connect Gmail -->
+    <section class="page" data-page="1">
+      <div class="eyebrow">Step 2 of 5</div>
+      <h2>Connect Gmail</h2>
+      <p class="lede">DRM Agent reads donor email threads to build context. It requests read-only access — nothing is ever sent on your behalf in this prototype.</p>
+      <div class="actions">
+        <a id="googleAuthLink" href="#"><button class="primary">Continue to Google →</button></a>
+      </div>
+      <p class="back"><button class="link" data-goto="0">← Back to sign in</button></p>
+    </section>
+
+    <!-- Step 3: Upload donors -->
+    <section class="page" data-page="2">
+      <div class="eyebrow">Step 3 of 5</div>
+      <h2>Upload donor list</h2>
+      <p class="lede">A CSV with columns <code>donor_id</code>, <code>name</code>, <code>email</code>. Each donor's email is matched against Gmail threads.</p>
+
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload CSV">
+        <div class="dz-title" id="dzTitle">Drop a CSV here, or click to browse</div>
+        <div class="dz-sub" id="dzSub">donor_id, name, email</div>
+      </div>
+      <input type="file" id="csvFile" accept=".csv" style="display:none" />
+
+      <div id="donorTableWrap"></div>
+
+      <div class="actions">
+        <button class="primary" id="continueToRunBtn" disabled>Continue</button>
+      </div>
+      <p class="back"><button class="link" data-goto="1">← Back to Gmail</button></p>
+    </section>
+
+    <!-- Step 4: Run -->
+    <section class="page" data-page="3">
+      <div class="eyebrow">Step 4 of 5</div>
+      <h2>Run the pipeline</h2>
+      <p class="lede">For each donor, DRM Agent will:</p>
+      <ol class="pipeline-steps">
+        <li>Fetch matching Gmail threads</li>
+        <li>Summarize the conversation history</li>
+        <li>Extract a structured donor profile</li>
+        <li>Classify the next relationship action</li>
+        <li>Draft a plan, then apply a fixed approval policy</li>
+      </ol>
+
+      <div class="runbox">
+        <div class="phase" id="phaseLine">
+          <span>Ready when you are — this runs live LLM calls per donor.</span>
+        </div>
+        <div class="timer" id="timerLine"></div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" id="processBtn">Process all donors</button>
+      </div>
+      <p class="back"><button class="link" data-goto="2">← Back to donors</button></p>
+    </section>
+
+    <!-- Step 5: Results -->
+    <section class="page" data-page="4">
+      <div class="eyebrow">Step 5 of 5</div>
+      <h2>Results</h2>
+      <p class="lede">One card per donor: the recommended next action, why, and whether it needs human sign-off.</p>
+
+      <div class="summary-bar" id="summaryBar"></div>
+      <div id="resultsWrap"></div>
+
+      <div class="actions">
+        <button class="primary" id="rerunBtn">Run again</button>
+        <button class="ghost" id="newBatchBtn" style="color:var(--ink); border-color:var(--line);">Upload a different list</button>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+(function(){
+  const $ = (id) => document.getElementById(id);
+
+  let donors = [];
+  let lastResults = null;
+  let current = 0;   // page currently shown
+  let furthest = 0;  // furthest page reached (unlocks rail navigation)
+  let gmailConnected = false;
+
+  // ---------- low-level helpers ----------
+
+  function banner(kind, message){
+    const el = document.createElement('div');
+    el.className = 'banner ' + kind;
+    el.innerHTML = '<span></span><button aria-label="Dismiss">&times;</button>';
+    el.querySelector('span').textContent = message;
+    el.querySelector('button').onclick = () => el.remove();
+    $('banners').prepend(el);
+    if (kind === 'ok') setTimeout(() => el.remove(), 4500);
+  }
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { credentials: 'same-origin', ...opts });
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* no body */ }
+    if (!res.ok) throw new Error((data && data.detail) || res.statusText || 'Request failed');
+    return data;
+  }
+
+  function escapeHtml(s){
+    return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---------- navigation ----------
+
+  function render(){
+    document.querySelectorAll('.page').forEach(p => {
+      p.classList.toggle('active', Number(p.dataset.page) === current);
+    });
+    document.querySelectorAll('#stepsList li').forEach(li => {
+      const idx = Number(li.dataset.index);
+      li.classList.toggle('active', idx === current);
+      li.classList.toggle('done', idx < furthest);
+      li.classList.toggle('clickable', idx <= furthest && idx !== current);
+      li.setAttribute('aria-current', idx === current ? 'step' : 'false');
+    });
+  }
+
+  function goTo(index){
+    if (index > furthest) return;
+    current = index;
+    render();
+    window.scrollTo(0, 0);
+  }
+
+  function unlock(index){
+    furthest = Math.max(furthest, index);
+    goTo(index);
+  }
+
+  document.querySelectorAll('#stepsList li').forEach(li => {
+    li.addEventListener('click', () => goTo(Number(li.dataset.index)));
+  });
+  document.querySelectorAll('button[data-goto]').forEach(btn => {
+    btn.addEventListener('click', () => goTo(Number(btn.dataset.goto)));
+  });
+
+  // ---------- status pill ----------
+
+  function setStatusPill(text, level){
+    $('statusText').textContent = text;
+    $('statusDot').className = 'dot' + (level ? ' ' + level : '');
+  }
+
+  // ---------- step 1: login ----------
+
+  $('loginBtn').addEventListener('click', async () => {
+    const username = $('username').value.trim();
+    const password = $('password').value;
+    if (!username || !password) { banner('error', 'Enter a username and password.'); return; }
+    const btn = $('loginBtn');
+    btn.disabled = true;
+    try {
+      const data = await api('/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          username,
+          password
+        })
+      });
+      if (data.mock) {
+        gmailConnected = true;
+        setStatusPill('Mock Gmail mode · ready', 'ready');
+        banner('ok', 'Mock Gmail mode active — using built-in sample donor conversations.');
+        unlock(2);
+      } else {
+        $('googleAuthLink').href = data.google_auth_url;
+        setStatusPill('Credentials verified · connect Gmail', 'on');
+        unlock(1);
+      }
+    } catch (e) {
+      banner('error', e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ---------- step 3: upload ----------
+
+  function renderDonors(){
+    const wrap = $('donorTableWrap');
+    if (!donors.length){ wrap.innerHTML = ''; $('continueToRunBtn').disabled = true; return; }
+    const rows = donors.map(d =>
+      `<tr><td>${escapeHtml(d.donor_id)}</td><td>${escapeHtml(d.name || '—')}</td><td>${escapeHtml(d.email)}</td></tr>`
+    ).join('');
+    wrap.innerHTML = `<table><thead><tr><th>ID</th><th>Name</th><th>Email</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $('continueToRunBtn').disabled = false;
+  }
+
+  async function uploadFile(file){
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.csv')) { banner('error', 'Please choose a .csv file.'); return; }
+    $('dzTitle').textContent = 'Uploading…';
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const data = await api('/donors/upload', { method: 'POST', body: form });
+      donors = data.donors;
+      $('dropzone').classList.add('has-file');
+      $('dzTitle').textContent = file.name;
+      $('dzSub').textContent = `${data.count} donor(s) parsed`;
+      renderDonors();
+      banner('ok', `Uploaded ${data.count} donor(s).`);
+    } catch (e) {
+      $('dzTitle').textContent = 'Drop a CSV here, or click to browse';
+      $('dzSub').textContent = 'donor_id, name, email';
+      banner('error', e.message);
+    }
+  }
+
+  const dz = $('dropzone');
+  dz.addEventListener('click', () => $('csvFile').click());
+  dz.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('csvFile').click(); } });
+  dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', (e) => {
+    e.preventDefault(); dz.classList.remove('drag');
+    if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+  });
+  $('csvFile').addEventListener('change', () => uploadFile($('csvFile').files[0]));
+
+  $('continueToRunBtn').addEventListener('click', () => unlock(3));
+
+  // ---------- step 4: run ----------
+
+  const PHASES = [
+    'Fetching matching Gmail threads…',
+    'Summarizing conversation history…',
+    'Extracting donor profiles…',
+    'Classifying next actions…',
+    'Drafting action plans…',
+    'Applying the approval policy…',
+  ];
+
+  let phaseTimer = null, clockTimer = null, elapsed = 0;
+
+  function startRunUI(){
+    elapsed = 0;
+    let phaseIdx = 0;
+    $('phaseLine').innerHTML = `<span class="spinner"></span><span>${PHASES[0]}</span>`;
+    phaseTimer = setInterval(() => {
+      phaseIdx = (phaseIdx + 1) % PHASES.length;
+      $('phaseLine').querySelector('span:last-child').textContent = PHASES[phaseIdx];
+    }, 2600);
+    clockTimer = setInterval(() => {
+      elapsed += 1;
+      const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const s = String(elapsed % 60).padStart(2, '0');
+      $('timerLine').textContent = `${m}:${s} elapsed`;
+    }, 1000);
+  }
+
+  function stopRunUI(finalText){
+    clearInterval(phaseTimer); clearInterval(clockTimer);
+    $('phaseLine').innerHTML = `<span>${finalText}</span>`;
+  }
+
+  async function runPipeline(){
+    const btn = $('processBtn');
+    btn.disabled = true;
+    startRunUI();
+    try {
+      const data = await api('/donors/process', { method: 'POST' });
+      lastResults = data;
+      stopRunUI(`Done — processed ${data.count} donor(s).`);
+      renderResults(data);
+      unlock(4);
+    } catch (e) {
+      stopRunUI('Something went wrong.');
+      banner('error', e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  $('processBtn').addEventListener('click', runPipeline);
+  $('rerunBtn').addEventListener('click', () => { goTo(3); runPipeline(); });
+  $('newBatchBtn').addEventListener('click', () => {
+    donors = [];
+    $('dropzone').classList.remove('has-file');
+    $('dzTitle').textContent = 'Drop a CSV here, or click to browse';
+    $('dzSub').textContent = 'donor_id, name, email';
+    renderDonors();
+    goTo(2);
+  });
+
+  // ---------- step 5: results ----------
+
+  function actionClass(action){
+    return {
+      'Thank You': 'thank-you', 'Outreach': 'outreach', 'Follow-Up': 'follow-up',
+      'Wait': 'wait', 'Human Review': 'human-review',
+    }[action] || 'wait';
+  }
+
+  function executionBlock(execution){
+    if (!execution) return '';
+    const status = execution.status;
+    if (status === 'sent') {
+      const email = execution.email || {};
+      return `<div class="approval" style="background:var(--teal-tint);color:var(--teal);">
+        <strong>Sent to ${escapeHtml(email.to || '')}</strong>
+        <div class="line"><span class="label">Subject:</span> ${escapeHtml(email.subject || '')}</div>
+        <details><summary>Email body</summary><pre>${escapeHtml(email.body || '')}</pre></details>
+      </div>`;
+    }
+    if (status === 'drafted') {
+      const email = execution.email || {};
+      return `<div class="approval"><strong>Drafted (not yet sent)</strong>
+        <div class="line"><span class="label">Subject:</span> ${escapeHtml(email.subject || '')}</div>
+        <details><summary>Email body</summary><pre>${escapeHtml(email.body || '')}</pre></details>
+      </div>`;
+    }
+    if (status === 'error') {
+      return `<div class="approval" style="background:var(--red-tint);color:var(--red);">
+        <strong>Execution error</strong><div class="line">${escapeHtml(execution.reason || '')}</div>
+      </div>`;
+    }
+    if (status === 'not_executed') {
+      return `<div class="line"><span class="label">Execution:</span> ${escapeHtml(execution.reason || 'Not executed.')}</div>`;
+    }
+    return '';
+  }
+
+  function renderResults(payload){
+    const results = payload.results || [];
+    const approvals = results.filter(r => r.approval.requires_human_approval).length;
+    const sent = results.filter(r => r.execution && r.execution.status === 'sent').length;
+    $('summaryBar').innerHTML = `
+      <div class="stat"><b>${results.length}</b>Donors processed</div>
+      <div class="stat"><b>${approvals}</b>Need approval</div>
+      <div class="stat"><b>${sent}</b>Emails sent</div>
+    `;
+
+    if (!results.length){ $('resultsWrap').innerHTML = '<div class="empty">No results yet.</div>'; return; }
+
+    $('resultsWrap').innerHTML = results.map(r => {
+      const donor = r.donor, plan = r.plan, approval = r.approval;
+      const classification = r.classification || { action: plan.action, reason: '(processing failed before classification)' };
+      const approvalBlock = approval.requires_human_approval
+        ? `<div class="approval"><strong>Needs human approval</strong>
+             <ul>${approval.reason.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>`
+        : executionBlock(r.execution);
+      return `
+        <div class="result">
+          <div class="result-head">
+            <div class="who">${escapeHtml(donor.name || donor.donor_id)}
+              <span class="email">${escapeHtml(donor.email)}</span>
+            </div>
+            <span class="badge ${actionClass(classification.action)}">${escapeHtml(classification.action)}</span>
+          </div>
+          <div class="result-body">
+            <div class="line"><span class="label">Threads found:</span> ${r.conversation_count}</div>
+            <div class="line"><span class="label">Reason:</span> ${escapeHtml(classification.reason)}</div>
+            <div class="line"><span class="label">Next step:</span> ${escapeHtml(plan.next_step)}</div>
+            ${approvalBlock}
+            <details><summary>Raw JSON</summary><pre>${escapeHtml(JSON.stringify(r, null, 2))}</pre></details>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // ---------- sign out ----------
+
+  $('logoutBtn').addEventListener('click', async () => {
+    await fetch('/logout', { method: 'POST', credentials: 'same-origin' });
+    window.location.href = '/app/';
+  });
+
+  // ---------- init ----------
+
+  (async function init(){
+    const params = new URLSearchParams(window.location.search);
+    const justConnected = params.get('connected') === '1';
+    if (justConnected) history.replaceState({}, '', '/app/');
+
+    let session = { authenticated: false, gmail_connected: false };
+    try { session = await api('/session'); } catch (e) { banner('error', 'Could not reach the API.'); }
+
+    if (!session.authenticated){
+      render();
+      return;
+    }
+
+    $('logoutBtn').style.display = 'inline-block';
+    gmailConnected = session.gmail_connected;
+
+    if (!gmailConnected){
+      setStatusPill('Credentials verified · connect Gmail', 'on');
+      unlock(1);
+      return;
+    }
+
+    setStatusPill('Signed in · Gmail connected', 'ready');
+    if (justConnected) banner('ok', 'Gmail connected.');
+
+    // Restore donor list if any was already uploaded this session.
+    try {
+      const d = await api('/donors');
+      donors = d.donors;
+      renderDonors();
+      unlock(donors.length ? 3 : 2);
+    } catch (e) {
+      unlock(2);
+    }
+  })();
+
+  render();
+})();
+</script>
+</body>
+</html>

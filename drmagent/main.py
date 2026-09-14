@@ -1,14 +1,23 @@
+import json
 import secrets
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from google.oauth2.credentials import Credentials
 
 from drmagent.config import settings
 from drmagent.gmail.auth import create_authorization_url, exchange_code
+from drmagent.gmail.mock_service import MockGmailService
 from drmagent.gmail.service import GmailService
-from drmagent.models import DonorRecord
+from drmagent.models import DonorRecord, LoginRequest
 from drmagent.orchestrator import load_donors_from_csv, process_donor
+
+# Sentinel stored in session["gmail_credentials"] when USE_MOCK_GMAIL=true,
+# so the truthiness checks used everywhere else ("has the user connected
+# Gmail?") keep working without a real OAuth token ever existing.
+_MOCK_CREDENTIALS_MARKER = "mock"
 
 app = FastAPI(title="DRM Agent", version="1.0.0")
 
@@ -26,14 +35,27 @@ def _session(request: Request) -> dict[str, Any]:
     return sessions[token]
 
 
+def _json_with_session_cookie(payload: dict[str, Any], login_token: str):
+    from fastapi.responses import JSONResponse
+
+    response = JSONResponse(payload)
+    response.set_cookie(
+        "session_token", login_token, httponly=True,
+        max_age=settings.session_ttl_seconds, samesite="lax",
+    )
+    return response
+
+
 @app.get("/")
 def root():
     return {"service": "DRM Agent", "status": "ok"}
 
-
 @app.post("/login")
-def login(username: str, password: str):
-    if username != settings.ngo_username or password != settings.ngo_password:
+def login(payload: LoginRequest):
+    if (
+        payload.username != settings.ngo_username
+        or payload.password != settings.ngo_password
+    ):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # auth_url, state = create_authorization_url()
@@ -43,13 +65,40 @@ def login(username: str, password: str):
 
     login_token = secrets.token_urlsafe(32)
 
+    if settings.use_mock_gmail:
+        # Demo/testing mode: skip real Google OAuth entirely. The session
+        # is immediately "Gmail connected" using the fixture donor
+        # conversations in gmail/mock_service.py.
+        sessions[login_token] = {
+            "authenticated": True,
+            "gmail_credentials": _MOCK_CREDENTIALS_MARKER,
+        }
+        _session_created_at[login_token] = time.time()
+        response = _json_with_session_cookie(
+            {
+                "message": (
+                    "Mock Gmail mode is active (USE_MOCK_GMAIL=true) -- "
+                    "skipping real Google authorization."
+                ),
+                "mock": True,
+            },
+            login_token,
+        )
+        return response
+
+    auth_url, state, code_verifier = create_authorization_url()
+
     oauth_states[state] = {
         "login_token": login_token,
         "code_verifier": code_verifier,
     }
     sessions[login_token] = {"authenticated": True, "gmail_credentials": None}
-    return {"message": "Credentials accepted. Authorize Gmail next.", "google_auth_url": auth_url}
-
+    _session_created_at[login_token] = time.time()
+    return {
+        "message": "Credentials accepted. Authorize Gmail next.",
+        "google_auth_url": auth_url,
+        "mock": False,
+    }
 
 @app.get("/auth/google/callback")
 def google_callback(code: str, state: str):
@@ -109,6 +158,22 @@ def list_donors(request: Request):
     return {"count": len(donor_records), "donors": [d.model_dump() for d in donor_records]}
 
 
+def _build_gmail_service(session: dict[str, Any]) -> GmailService | MockGmailService:
+    """Build the Gmail client for this session: the scripted MockGmailService
+    when USE_MOCK_GMAIL=true, otherwise a real GmailService from the
+    session's encrypted OAuth credentials."""
+    if settings.use_mock_gmail:
+        return MockGmailService()
+
+    decrypted_json = decrypt_credentials(session["gmail_credentials"])
+    credentials = Credentials.from_authorized_user_info(json.loads(decrypted_json))
+    return GmailService(
+        credentials,
+        max_threads=settings.max_threads_per_donor,
+        max_messages_per_thread=settings.max_messages_per_thread,
+    )
+
+
 @app.post("/donors/process")
 def process_donors(request: Request):
     session = _session(request)
@@ -126,6 +191,7 @@ def process_donors(request: Request):
         max_threads=settings.max_threads_per_donor,
         max_messages_per_thread=settings.max_messages_per_thread,
     )
+    gmail = _build_gmail_service(session)
     results = [process_donor(gmail, donor) for donor in donor_records]
     return {"count": len(results), "results": results}
 
@@ -168,3 +234,6 @@ def test_gmail_reply(request: Request):
         "status": "sent",
         "gmail_response": result,
     }
+# Serve the SPA frontend at /app/ (and /web/index.html).
+_STATIC_APP_DIR = Path(__file__).resolve().parent / "web"
+app.mount("/app", StaticFiles(directory=_STATIC_APP_DIR, html=True), name="app")
